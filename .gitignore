@@ -79,7 +79,7 @@ tmp/
 *.avi
 *.webm
 *.flv
-*.ts
+*.m2ts
 *.m4s
 *.wav
 *.mp3
@@ -92,8 +92,8 @@ ffprobe-*.tmp
 
 # --- AI Models & Downloaded Weights ---
 # Local LLM, Whisper, VAD, and embedding models
-models/
-weights/
+/models/
+/weights/
 *.bin
 *.onnx
 *.safetensors
