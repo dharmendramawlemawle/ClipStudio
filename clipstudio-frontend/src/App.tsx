@@ -4,6 +4,7 @@ import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { JobTester } from './components/JobTester';
 import { JobsTable } from './components/JobsTable';
+import { ImportedVideosView } from './components/media/ImportedVideosView';
 import { fetchHealth, fetchJobs } from './api/client';
 import { useWebSocket } from './hooks/useWebSocket';
 import { ProcessingJob, JobProgressEvent } from './types';
@@ -46,23 +47,33 @@ export function App() {
 
   // 4. WebSocket progress event handler
   const handleJobProgress = (event: JobProgressEvent) => {
+    if (event.event_type === 'media_imported') {
+      queryClient.invalidateQueries({ queryKey: ['media'] });
+      return;
+    }
+
+    if (!event.job_id) return;
+
+    const jobId = event.job_id;
+    const jobStatus = (event.status as 'queued' | 'running' | 'completed' | 'failed' | 'cancelled') || 'running';
+
     // Update active job if matching or newly created
     setActiveJob((prev) => {
-      if (!prev || prev.id === event.job_id) {
+      if (!prev || prev.id === jobId) {
         return {
-          id: event.job_id,
+          id: jobId,
           entity_type: prev?.entity_type || 'test',
           entity_id: prev?.entity_id || null,
           job_type: prev?.job_type || 'test_job',
-          status: event.status,
-          progress_percent: event.progress_percent,
-          current_step: event.current_step,
+          status: jobStatus,
+          progress_percent: event.progress_percent || 0,
+          current_step: event.current_step || 'Processing',
           result_data: prev?.result_data || null,
-          error_message: event.status === 'failed' ? event.message : null,
+          error_message: jobStatus === 'failed' ? event.message || null : null,
           retry_count: prev?.retry_count || 0,
           max_retries: prev?.max_retries || 3,
           started_at: prev?.started_at || new Date().toISOString(),
-          completed_at: event.status === 'completed' || event.status === 'failed' ? new Date().toISOString() : null,
+          completed_at: jobStatus === 'completed' || jobStatus === 'failed' ? new Date().toISOString() : null,
           created_at: prev?.created_at || new Date().toISOString(),
           updated_at: event.timestamp,
         };
@@ -98,77 +109,83 @@ export function App() {
 
         {/* Main Workspace Body */}
         <main className="flex-1 overflow-y-auto p-8 space-y-8 max-w-7xl mx-auto w-full">
-          {/* Welcome Banner */}
-          <div className="flex items-center justify-between pb-4 border-b border-studio-800">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">
-                ClipStudio Workspace
-              </h1>
-              <p className="text-sm text-studio-400 mt-1">
-                Phase 1 Scaffolding — Verified Async Core, SQLite WAL Engine & WebSocket Telemetry
-              </p>
-            </div>
-            <div className="flex items-center space-x-2 text-xs bg-brand-500/10 border border-brand-500/20 text-brand-500 px-3 py-1.5 rounded-lg">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Independent Architecture Active</span>
-            </div>
-          </div>
+          {currentTab === 'videos' ? (
+            <ImportedVideosView />
+          ) : (
+            <>
+              {/* Welcome Banner */}
+              <div className="flex items-center justify-between pb-4 border-b border-studio-800">
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight text-white">
+                    ClipStudio Workspace
+                  </h1>
+                  <p className="text-sm text-studio-400 mt-1">
+                    Phase 1 & Phase 2A — Ingestion Engine, SQLite WAL, Durable Jobs & WebSocket Telemetry
+                  </p>
+                </div>
+                <div className="flex items-center space-x-2 text-xs bg-brand-500/10 border border-brand-500/20 text-brand-500 px-3 py-1.5 rounded-lg">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Phase 2A Foundation Active</span>
+                </div>
+              </div>
 
-          {/* Foundation Health & Metrics Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {/* Storage Metric */}
-            <div className="bg-studio-900 border border-studio-800 rounded-xl p-5 shadow-lg flex items-center space-x-4">
-              <div className="w-12 h-12 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
-                <HardDrive className="w-6 h-6 text-blue-400" />
-              </div>
-              <div>
-                <p className="text-xs text-studio-400 uppercase font-semibold">Database Engine</p>
-                <p className="text-base font-bold text-white mt-0.5">SQLite 3 (WAL Mode)</p>
-                <p className="text-xs text-blue-400 font-mono mt-0.5">clipstudio.db • Migrated</p>
-              </div>
-            </div>
+              {/* Foundation Health & Metrics Row */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                {/* Storage Metric */}
+                <div className="bg-studio-900 border border-studio-800 rounded-xl p-5 shadow-lg flex items-center space-x-4">
+                  <div className="w-12 h-12 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
+                    <HardDrive className="w-6 h-6 text-blue-400" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-studio-400 uppercase font-semibold">Database Engine</p>
+                    <p className="text-base font-bold text-white mt-0.5">SQLite 3 (WAL Mode)</p>
+                    <p className="text-xs text-blue-400 font-mono mt-0.5">clipstudio.db • Migrated</p>
+                  </div>
+                </div>
 
-            {/* Hardware Profile Metric */}
-            <div className="bg-studio-900 border border-studio-800 rounded-xl p-5 shadow-lg flex items-center space-x-4">
-              <div className="w-12 h-12 rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-center shrink-0">
-                <Cpu className="w-6 h-6 text-brand-500" />
-              </div>
-              <div>
-                <p className="text-xs text-studio-400 uppercase font-semibold">Hardware Allocation</p>
-                <p className="text-base font-bold text-white mt-0.5">Intel i5-1135G7 (4 Threads)</p>
-                <p className="text-xs text-brand-500 font-mono mt-0.5">1 Heavy Job Limit Active</p>
-              </div>
-            </div>
+                {/* Hardware Profile Metric */}
+                <div className="bg-studio-900 border border-studio-800 rounded-xl p-5 shadow-lg flex items-center space-x-4">
+                  <div className="w-12 h-12 rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-center shrink-0">
+                    <Cpu className="w-6 h-6 text-brand-500" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-studio-400 uppercase font-semibold">Hardware Allocation</p>
+                    <p className="text-base font-bold text-white mt-0.5">Intel i5-1135G7 (4 Threads)</p>
+                    <p className="text-xs text-brand-500 font-mono mt-0.5">1 Heavy Job Limit Active</p>
+                  </div>
+                </div>
 
-            {/* Storage Directory Metric */}
-            <div className="bg-studio-900 border border-studio-800 rounded-xl p-5 shadow-lg flex items-center space-x-4">
-              <div className="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center shrink-0">
-                <FolderCheck className="w-6 h-6 text-purple-400" />
+                {/* Storage Directory Metric */}
+                <div className="bg-studio-900 border border-studio-800 rounded-xl p-5 shadow-lg flex items-center space-x-4">
+                  <div className="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center shrink-0">
+                    <FolderCheck className="w-6 h-6 text-purple-400" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-studio-400 uppercase font-semibold">Local Media Directory</p>
+                    <p className="text-base font-bold text-white mt-0.5">D:/dharmendra/clipstudio/data</p>
+                    <p className="text-xs text-purple-400 font-mono mt-0.5">Phase 2A Media Ingestion Ready</p>
+                  </div>
+                </div>
               </div>
-              <div>
-                <p className="text-xs text-studio-400 uppercase font-semibold">Local Media Directory</p>
-                <p className="text-base font-bold text-white mt-0.5">D:/dharmendra/clipstudio/data</p>
-                <p className="text-xs text-purple-400 font-mono mt-0.5">Ready for Phase 2 Ingestion</p>
-              </div>
-            </div>
-          </div>
 
-          {/* Test Job Interactive Runner */}
-          <JobTester
-            activeJob={activeJob}
-            onJobCreated={(newJob) => {
-              setActiveJob(newJob);
-              refetchJobs();
-            }}
-          />
+              {/* Test Job Interactive Runner */}
+              <JobTester
+                activeJob={activeJob}
+                onJobCreated={(newJob) => {
+                  setActiveJob(newJob);
+                  refetchJobs();
+                }}
+              />
 
-          {/* Historical Jobs Table */}
-          <JobsTable
-            jobs={jobs}
-            loading={jobsLoading}
-            onRefresh={() => refetchJobs()}
-            onSelectJob={(job) => setActiveJob(job)}
-          />
+              {/* Historical Jobs Table */}
+              <JobsTable
+                jobs={jobs}
+                loading={jobsLoading}
+                onRefresh={() => refetchJobs()}
+                onSelectJob={(job) => setActiveJob(job)}
+              />
+            </>
+          )}
         </main>
       </div>
     </div>

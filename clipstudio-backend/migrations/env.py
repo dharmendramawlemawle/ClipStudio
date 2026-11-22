@@ -13,6 +13,7 @@ from app.models.base import Base
 import app.models.workspace  # noqa: F401
 import app.models.video      # noqa: F401
 import app.models.job        # noqa: F401
+import app.models.upload     # noqa: F401
 
 config = context.config
 

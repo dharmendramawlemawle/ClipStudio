@@ -63,14 +63,14 @@ storage/db/*.sqlite*
 
 # --- Media, Video, Audio & FFmpeg Temporary Outputs ---
 # Generated clips, renders, exports, and audio extractions
-output/
-renders/
-clips/
-media/
-recordings/
-uploads/
-temp/
-tmp/
+/output/
+/renders/
+/clips/
+/media/
+/recordings/
+/uploads/
+/temp/
+/tmp/
 *.tmp
 *.temp
 *.mp4

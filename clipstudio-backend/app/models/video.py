@@ -1,5 +1,5 @@
 from typing import TYPE_CHECKING
-from sqlalchemy import BigInteger, Float, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, generate_uuid
 
@@ -27,6 +27,9 @@ class ImportedVideo(Base, TimestampMixin):
     video_codec: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     audio_codec: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True, nullable=False)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    container_format: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="videos")

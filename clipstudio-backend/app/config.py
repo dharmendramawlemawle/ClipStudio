@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     STORAGE_DIR: Path = BASE_DIR / "data"
     MEDIA_DIR: Path = STORAGE_DIR / "media"
+    MEDIA_ORIGINALS_DIR: Path = MEDIA_DIR / "originals"
     TEMP_DIR: Path = STORAGE_DIR / "temp"
+    UPLOADS_TEMP_DIR: Path = TEMP_DIR / "uploads"
 
     # SQLite Database Configuration
     DB_FILE: Path = STORAGE_DIR / "clipstudio.db"
@@ -41,6 +43,12 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
 
+    # Ingestion & Upload Policies (Phase 2A)
+    MAX_UPLOAD_SIZE_BYTES: int = 5 * 1024 * 1024 * 1024  # 5 GB default
+    MIN_FREE_DISK_RESERVE_BYTES: int = 1 * 1024 * 1024 * 1024  # 1 GB minimum free disk reserve
+    UPLOAD_SESSION_TTL_HOURS: int = 24
+    DEFAULT_CHUNK_SIZE_BYTES: int = 1024 * 1024  # 1 MB
+
     # Hardware & Job Execution Policies (Intel i5-1135G7 / 16GB)
     MAX_CONCURRENT_HEAVY_JOBS: int = 1
     JOB_POLL_INTERVAL_SECONDS: float = 0.5
@@ -58,4 +66,6 @@ settings = Settings()
 # Ensure required local directories exist
 settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+settings.MEDIA_ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
 settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+settings.UPLOADS_TEMP_DIR.mkdir(parents=True, exist_ok=True)

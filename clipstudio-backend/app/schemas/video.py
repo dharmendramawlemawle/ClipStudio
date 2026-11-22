@@ -13,6 +13,9 @@ class ImportedVideoBase(BaseModel):
     video_codec: str = ""
     audio_codec: str = ""
     status: str = "pending"
+    sha256: str | None = None
+    container_format: str = ""
+    metadata_json: str | None = None
 
 
 class ImportedVideoCreate(ImportedVideoBase):
@@ -27,3 +30,9 @@ class ImportedVideoRead(ImportedVideoBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class MediaListResponse(BaseModel):
+    items: list[ImportedVideoRead]
+    total: int
+    skip: int
+    limit: int
