@@ -291,6 +291,11 @@ export const MediaTable: React.FC<MediaTableProps> = ({
                                 Thumb ready
                               </span>
                             )}
+                            {thumbStatus === 'failed' && (
+                              <span className="text-[9px] text-red-400/90 font-medium bg-red-500/10 px-1 rounded">
+                                Thumb failed
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>

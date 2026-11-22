@@ -186,6 +186,7 @@ describe('MediaTable Component - Thumbnail Engine Integration (Phase 2B.2)', () 
 
     const retryBtn = screen.getByRole('button', { name: /retry/i });
     expect(retryBtn).toBeDefined();
+    expect(screen.getByText('Thumb failed')).toBeDefined();
 
     await act(async () => {
       fireEvent.click(retryBtn);
