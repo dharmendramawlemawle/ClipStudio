@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -45,8 +45,8 @@ export function App() {
     }
   }, [jobs, activeJob]);
 
-  // 4. WebSocket progress event handler
-  const handleJobProgress = (event: JobProgressEvent) => {
+  // 4. WebSocket progress event handler (memoized with useCallback)
+  const handleJobProgress = useCallback((event: JobProgressEvent) => {
     if (event.event_type === 'media_imported') {
       queryClient.invalidateQueries({ queryKey: ['media'] });
       return;
@@ -83,7 +83,7 @@ export function App() {
 
     // Invalidate & refresh query cache so jobs table is synchronized
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
-  };
+  }, [queryClient]);
 
   // 5. Connect WebSocket
   const { status: wsStatus, reconnect: reconnectWS } = useWebSocket(handleJobProgress);

@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     JOB_POLL_INTERVAL_SECONDS: float = 0.5
     DEFAULT_CPU_THREADS: int = 4
 
+    # FFmpeg Processing Engine Configuration (Phase 2B.1)
+    FFMPEG_PATH: str | None = None
+    FFPROBE_PATH: str | None = None
+    MAX_CONCURRENT_FFMPEG_JOBS: int = 1
+    FFMPEG_SUBPROCESS_TIMEOUT_SECONDS: float = 3600.0  # 1 hour maximum per job
+    FFMPEG_STDERR_MAX_BYTES: int = 256 * 1024  # 256 KB bounded circular buffer
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

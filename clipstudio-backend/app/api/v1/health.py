@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.schemas.health import HealthResponse
+from app.services.ffmpeg import detect_ffmpeg_runtime
 from app.services.job_queue import job_queue
 
 router = APIRouter(prefix="/health", tags=["Health"])
@@ -19,6 +20,8 @@ async def check_health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     except Exception as exc:
         db_status = f"unhealthy: {exc}"
 
+    ffmpeg_info = await detect_ffmpeg_runtime()
+
     return HealthResponse(
         status="ok" if db_status == "ok" else "degraded",
         app_name=settings.APP_NAME,
@@ -30,5 +33,14 @@ async def check_health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
             "platform": "Windows",
             "cpu_threads_configured": settings.DEFAULT_CPU_THREADS,
             "max_concurrent_heavy_jobs": settings.MAX_CONCURRENT_HEAVY_JOBS,
+            "max_concurrent_ffmpeg_jobs": settings.MAX_CONCURRENT_FFMPEG_JOBS,
         },
+        ffmpeg=ffmpeg_info.to_dict(),
     )
+
+
+@router.get("/ffmpeg")
+async def get_ffmpeg_capabilities(refresh: bool = Query(default=False)):
+    """Returns detected FFmpeg capabilities including version, hwaccel, and encoders."""
+    runtime_info = await detect_ffmpeg_runtime(force_refresh=refresh)
+    return runtime_info.to_dict()

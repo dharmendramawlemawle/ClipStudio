@@ -9,10 +9,21 @@ export function useWebSocket(onJobProgress?: (event: JobProgressEvent) => void) 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const retryCountRef = useRef(0);
+  const onJobProgressRef = useRef(onJobProgress);
+
+  // Always keep ref updated to avoid stale closures without triggering reconnects
+  useEffect(() => {
+    onJobProgressRef.current = onJobProgress;
+  }, [onJobProgress]);
 
   const connect = useCallback(() => {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return;
+    }
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
 
     setStatus('connecting');
@@ -25,6 +36,9 @@ export function useWebSocket(onJobProgress?: (event: JobProgressEvent) => void) 
     try {
       const socket = new WebSocket(wsUrl);
       wsRef.current = socket;
+      if (typeof window !== 'undefined') {
+        (window as any).__clipstudio_ws = socket;
+      }
 
       socket.onopen = () => {
         setStatus('connected');
@@ -37,8 +51,8 @@ export function useWebSocket(onJobProgress?: (event: JobProgressEvent) => void) 
           if (data.event_type === 'job_progress') {
             const jobEvent = data as JobProgressEvent;
             setLastEvent(jobEvent);
-            if (onJobProgress) {
-              onJobProgress(jobEvent);
+            if (onJobProgressRef.current) {
+              onJobProgressRef.current(jobEvent);
             }
           }
         } catch (err) {
@@ -62,13 +76,16 @@ export function useWebSocket(onJobProgress?: (event: JobProgressEvent) => void) 
       console.error('WebSocket connection error:', err);
       setStatus('disconnected');
     }
-  }, [onJobProgress]);
+  }, []);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
     if (wsRef.current) {
+      // Clear onclose handler before closing to prevent unwanted reconnect timer
+      wsRef.current.onclose = null;
       wsRef.current.close();
       wsRef.current = null;
     }

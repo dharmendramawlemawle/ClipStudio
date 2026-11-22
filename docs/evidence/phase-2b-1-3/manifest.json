@@ -1,0 +1,103 @@
+{
+  "testDate": "2026-11-22T10:50:30.290Z",
+  "totalWsCreated": 5,
+  "totalWsClosed": 3,
+  "finalActiveSockets": 1,
+  "screenshots": [
+    {
+      "name": "01_initial_connection.png",
+      "path": "D:\\dharmendra\\clipstudio\\docs\\evidence\\phase-2b-1-3\\01_initial_connection.png",
+      "timestamp": "2026-11-22T10:50:30.290Z"
+    },
+    {
+      "name": "02_rerender_stability.png",
+      "path": "D:\\dharmendra\\clipstudio\\docs\\evidence\\phase-2b-1-3\\02_rerender_stability.png",
+      "timestamp": "2026-11-22T10:50:30.290Z"
+    },
+    {
+      "name": "03_live_telemetry.png",
+      "path": "D:\\dharmendra\\clipstudio\\docs\\evidence\\phase-2b-1-3\\03_live_telemetry.png",
+      "timestamp": "2026-11-22T10:50:30.290Z"
+    },
+    {
+      "name": "04_genuine_disconnect.png",
+      "path": "D:\\dharmendra\\clipstudio\\docs\\evidence\\phase-2b-1-3\\04_genuine_disconnect.png",
+      "timestamp": "2026-11-22T10:50:30.290Z"
+    },
+    {
+      "name": "05_genuine_reconnected.png",
+      "path": "D:\\dharmendra\\clipstudio\\docs\\evidence\\phase-2b-1-3\\05_genuine_reconnected.png",
+      "timestamp": "2026-11-22T10:50:30.290Z"
+    },
+    {
+      "name": "06_page_refresh.png",
+      "path": "D:\\dharmendra\\clipstudio\\docs\\evidence\\phase-2b-1-3\\06_page_refresh.png",
+      "timestamp": "2026-11-22T10:50:30.290Z"
+    }
+  ],
+  "wsEvents": [
+    {
+      "type": "created",
+      "requestId": "5692.30",
+      "url": "ws://localhost:5173/ws/events",
+      "time": "2026-11-22T10:50:21.714Z"
+    },
+    {
+      "type": "created",
+      "requestId": "5692.31",
+      "url": "ws://localhost:5173/ws/events",
+      "time": "2026-11-22T10:50:21.715Z"
+    },
+    {
+      "type": "closed",
+      "requestId": "5692.30",
+      "time": "2026-11-22T10:50:21.715Z"
+    },
+    {
+      "type": "frame",
+      "requestId": "5692.31",
+      "event_type": "job_progress",
+      "time": "2026-11-22T10:50:27.408Z"
+    },
+    {
+      "type": "frame",
+      "requestId": "5692.31",
+      "event_type": "job_progress",
+      "time": "2026-11-22T10:50:27.429Z"
+    },
+    {
+      "type": "closed",
+      "requestId": "5692.31",
+      "time": "2026-11-22T10:50:27.781Z"
+    },
+    {
+      "type": "created",
+      "requestId": "5692.41",
+      "url": "ws://localhost:5173/ws/events",
+      "time": "2026-11-22T10:50:28.771Z"
+    },
+    {
+      "type": "created",
+      "requestId": "5692.71",
+      "url": "ws://localhost:5173/ws/events",
+      "time": "2026-11-22T10:50:29.320Z"
+    },
+    {
+      "type": "created",
+      "requestId": "5692.72",
+      "url": "ws://localhost:5173/ws/events",
+      "time": "2026-11-22T10:50:29.320Z"
+    },
+    {
+      "type": "closed",
+      "requestId": "5692.71",
+      "time": "2026-11-22T10:50:29.334Z"
+    },
+    {
+      "type": "frame",
+      "requestId": "5692.72",
+      "event_type": "job_progress",
+      "time": "2026-11-22T10:50:29.433Z"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -12,4 +13,8 @@ class HealthResponse(BaseModel):
     hardware: dict[str, str | int | float] = Field(
         default_factory=dict,
         description="Core hardware & host runtime metrics",
+    )
+    ffmpeg: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="FFmpeg runtime and capabilities information",
     )
