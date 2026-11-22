@@ -27,6 +27,15 @@ class JobQueueService:
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._active_runners: dict[str, FFmpegRunner] = {}
         self._cancellation_requested: set[str] = set()
+        self._fault_injection_fail_enqueue: bool = False
+        self._media_enqueue_locks: dict[str, asyncio.Lock] = {}
+        self._media_locks_mutex = asyncio.Lock()
+
+    async def _get_media_lock(self, media_id: str) -> asyncio.Lock:
+        async with self._media_locks_mutex:
+            if media_id not in self._media_enqueue_locks:
+                self._media_enqueue_locks[media_id] = asyncio.Lock()
+            return self._media_enqueue_locks[media_id]
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         try:
@@ -58,6 +67,12 @@ class JobQueueService:
             else:
                 logger.info("No interrupted jobs found during startup reconciliation.")
 
+        # Reconcile any orphaned, interrupted, or missing thumbnail records
+        try:
+            await self.reconcile_pending_thumbnails()
+        except Exception as rec_err:
+            logger.warning(f"Error during startup thumbnail reconciliation: {rec_err}")
+
     async def create_job(
         self,
         job_type: str,
@@ -79,7 +94,7 @@ class JobQueueService:
             session.add(job)
             await session.commit()
             await session.refresh(job)
-
+            session.expunge(job)
             job_id = job.id
 
         # Broadcast initial queued status
@@ -91,13 +106,11 @@ class JobQueueService:
             message=f"Job {job_type} has been queued.",
         )
 
-        # Dispatch async execution task
+        # Dispatch async execution task ONLY after database transaction has committed
         task = asyncio.create_task(self._execute_job_wrapper(job_id, job_type, payload))
         self._active_tasks[job_id] = task
 
-        # Re-fetch fresh model to return
-        async with async_session_factory() as session:
-            return await session.get(ProcessingJob, job_id)
+        return job
 
     async def _update_job_progress(
         self,
@@ -360,39 +373,177 @@ class JobQueueService:
         file_path: str,
         duration_seconds: float = 0.0,
     ) -> ProcessingJob:
-        """Enqueue a thumbnail generation job, avoiding duplicate active jobs for the same media asset."""
+        """Enqueue a thumbnail generation job, avoiding duplicate active jobs for the same media asset.
+
+        Atomically sets ImportedVideo.thumbnail_status = 'pending' and creates ProcessingJob
+        in a single transaction to prevent race conditions and SQLite multi-session deadlocks.
+        Dispatches background worker only after database transaction commit succeeds.
+        """
+        if self._fault_injection_fail_enqueue:
+            raise RuntimeError("Simulated thumbnail job enqueue failure (fault injection active)")
+
+        lock = await self._get_media_lock(media_id)
+        async with lock:
+            async with async_session_factory() as session:
+                stmt = select(ProcessingJob).where(
+                    ProcessingJob.entity_type == "media",
+                    ProcessingJob.entity_id == media_id,
+                    ProcessingJob.job_type == "thumbnail_generation",
+                    ProcessingJob.status.in_(["queued", "running"]),
+                )
+                res = await session.execute(stmt)
+                existing = res.scalar_one_or_none()
+                if existing:
+                    logger.info(
+                        f"Active thumbnail job {existing.id} already exists for media {media_id}. Reusing existing job."
+                    )
+                    session.expunge(existing)
+                    return existing
+
+                from app.models.video import ImportedVideo
+                video = await session.get(ImportedVideo, media_id)
+                if video:
+                    video.thumbnail_status = "pending"
+
+                payload = {
+                    "media_id": media_id,
+                    "workspace_id": workspace_id,
+                    "file_path": file_path,
+                    "duration": duration_seconds,
+                }
+                job = ProcessingJob(
+                    job_type="thumbnail_generation",
+                    entity_type="media",
+                    entity_id=media_id,
+                    status="queued",
+                    progress_percent=0.0,
+                    current_step="Queued in scheduler",
+                    result_data=json.dumps(payload),
+                )
+                session.add(job)
+                await session.commit()
+                await session.refresh(job)
+                session.expunge(job)
+                job_id = job.id
+
+            # Broadcast initial queued status
+            await ws_manager.broadcast_job_progress(
+                job_id=job_id,
+                status="queued",
+                progress_percent=0.0,
+                current_step="Queued in scheduler",
+                message="Job thumbnail_generation has been queued.",
+            )
+            try:
+                await ws_manager.broadcast({
+                    "event_type": "thumbnail_updated",
+                    "media_id": media_id,
+                    "workspace_id": workspace_id,
+                    "status": "queued",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+
+            # Dispatch async execution task ONLY after database transaction has committed
+            task = asyncio.create_task(self._execute_job_wrapper(job_id, "thumbnail_generation", payload))
+            self._active_tasks[job_id] = task
+
+            return job
+
+    async def reconcile_pending_thumbnails(self, workspace_id: str | None = None) -> list[str]:
+        """Scans imported videos for pending, interrupted, or missing thumbnails and safely schedules generation.
+
+        - Identifies eligible media records requiring thumbnail extraction.
+        - Verifies that the source media file exists and is valid on disk.
+        - Prevents duplicate active jobs.
+        - Avoids retry loops for permanently missing or inaccessible source files.
+        """
+        from pathlib import Path
+        from app.models.video import ImportedVideo
+        from app.services.storage import safe_resolve_path
+
+        recovered_media_ids: list[str] = []
+
         async with async_session_factory() as session:
-            stmt = select(ProcessingJob).where(
+            query = select(ImportedVideo)
+            if workspace_id:
+                query = query.where(ImportedVideo.workspace_id == workspace_id)
+            res = await session.execute(query)
+            all_videos = res.scalars().all()
+
+            # Query all currently active thumbnail jobs
+            active_stmt = select(ProcessingJob.entity_id).where(
                 ProcessingJob.entity_type == "media",
-                ProcessingJob.entity_id == media_id,
                 ProcessingJob.job_type == "thumbnail_generation",
                 ProcessingJob.status.in_(["queued", "running"]),
             )
-            res = await session.execute(stmt)
-            existing = res.scalar_one_or_none()
-            if existing:
-                logger.info(
-                    f"Active thumbnail job {existing.id} already exists for media {media_id}. Reusing existing job."
+            active_res = await session.execute(active_stmt)
+            active_media_ids = set(active_res.scalars().all())
+
+            candidates: list[dict] = []
+            for vid in all_videos:
+                if vid.id in active_media_ids:
+                    continue
+
+                needs_recovery = False
+                if vid.thumbnail_status in ("pending", "processing"):
+                    needs_recovery = True
+                elif not vid.thumbnail_path:
+                    needs_recovery = True
+                else:
+                    try:
+                        p = Path(vid.thumbnail_path)
+                        abs_thumb = p.resolve() if p.is_absolute() else safe_resolve_path(vid.thumbnail_path)
+                        if not abs_thumb.exists() or abs_thumb.stat().st_size == 0:
+                            needs_recovery = True
+                    except Exception:
+                        needs_recovery = True
+
+                if needs_recovery:
+                    # Verify source video file exists
+                    try:
+                        sp = Path(vid.file_path)
+                        abs_source = sp.resolve() if sp.is_absolute() else safe_resolve_path(vid.file_path)
+                        if not abs_source.exists() or not abs_source.is_file():
+                            logger.warning(
+                                f"Thumbnail reconciliation: Source file missing for media {vid.id} "
+                                f"('{vid.file_path}'). Marking thumbnail status as failed to prevent retry loops."
+                            )
+                            vid.thumbnail_status = "failed"
+                            continue
+                    except Exception as source_err:
+                        logger.warning(
+                            f"Thumbnail reconciliation: Cannot access source file for media {vid.id}: {source_err}. "
+                            f"Marking status as failed."
+                        )
+                        vid.thumbnail_status = "failed"
+                        continue
+
+                    candidates.append({
+                        "media_id": vid.id,
+                        "workspace_id": vid.workspace_id,
+                        "file_path": vid.file_path,
+                        "duration_seconds": vid.duration_seconds,
+                    })
+
+            await session.commit()
+
+        # Enqueue jobs outside the initial session to avoid holding write locks
+        for c in candidates:
+            try:
+                await self.enqueue_thumbnail_job(
+                    media_id=c["media_id"],
+                    workspace_id=c["workspace_id"],
+                    file_path=c["file_path"],
+                    duration_seconds=c["duration_seconds"],
                 )
-                return existing
+                recovered_media_ids.append(c["media_id"])
+                logger.info(f"Reconciled and enqueued thumbnail generation for media {c['media_id']}.")
+            except Exception as enq_err:
+                logger.warning(f"Failed to reconcile thumbnail for media {c['media_id']}: {enq_err}")
 
-            from app.models.video import ImportedVideo
-            video = await session.get(ImportedVideo, media_id)
-            if video:
-                video.thumbnail_status = "pending"
-                await session.commit()
-
-        return await self.create_job(
-            job_type="thumbnail_generation",
-            entity_type="media",
-            entity_id=media_id,
-            payload={
-                "media_id": media_id,
-                "workspace_id": workspace_id,
-                "file_path": file_path,
-                "duration": duration_seconds,
-            },
-        )
+        return recovered_media_ids
 
 
     async def run_ffmpeg_job(
@@ -503,11 +654,18 @@ class JobQueueService:
     async def cancel_all_active_jobs(self) -> None:
         """Cancels all active jobs (used during test teardown or graceful shutdown)."""
         active_ids = list(self._active_tasks.keys())
+        tasks = []
         for jid in active_ids:
+            task = self._active_tasks.get(jid)
+            if task and not task.done():
+                tasks.append(task)
             try:
                 await self.cancel_job(jid)
             except Exception as exc:
                 logger.warning(f"Error cancelling job {jid}: {exc}")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._active_tasks.clear()
 
 
 job_queue = JobQueueService()

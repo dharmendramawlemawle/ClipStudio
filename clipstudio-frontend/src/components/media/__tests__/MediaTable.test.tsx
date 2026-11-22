@@ -3,6 +3,20 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MediaTable } from '../MediaTable';
 import { ImportedVideo } from '../../../types';
 
+vi.mock('../../../api/client', async () => {
+  const actual = await vi.importActual<any>('../../../api/client');
+  return {
+    ...actual,
+    fetchThumbnailMetadata: vi.fn().mockResolvedValue({
+      media_id: 'vid-completed',
+      status: 'completed',
+      width: 640,
+      height: 360,
+      file_size_bytes: 42500,
+    }),
+  };
+});
+
 const baseVideo: ImportedVideo = {
   id: 'vid-123',
   workspace_id: 'ws-default',
@@ -78,10 +92,11 @@ describe('MediaTable Component - Thumbnail Engine Integration (Phase 2B.2)', () 
       fireEvent.click(thumbnailWrapper);
     });
 
-    // Modal should now be visible with Close button and video details
+    // Modal should now be visible with Close button, video details, and actual thumbnail dimensions
     const closeBtn = screen.getByRole('button', { name: 'Close' });
     expect(closeBtn).toBeDefined();
-    expect(screen.getAllByText(/1920x1080/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/1920x1080/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/640x360px/)).toBeDefined();
 
     // Clicking Close closes modal
     await act(async () => {
@@ -108,7 +123,8 @@ describe('MediaTable Component - Thumbnail Engine Integration (Phase 2B.2)', () 
     expect(screen.getByText('Extracting...')).toBeDefined();
   });
 
-  it('renders queued state when thumbnail_status is pending', () => {
+  it('renders accurate pending state when thumbnail_status is pending with manual start button', async () => {
+    const onRegenerateMock = vi.fn().mockResolvedValue(undefined);
     const videoPending: ImportedVideo = {
       ...baseVideo,
       id: 'vid-pending',
@@ -118,6 +134,31 @@ describe('MediaTable Component - Thumbnail Engine Integration (Phase 2B.2)', () 
     render(
       <MediaTable
         videos={[videoPending]}
+        isLoading={false}
+        onDeleteVideo={vi.fn()}
+        onRegenerateThumbnail={onRegenerateMock}
+      />
+    );
+
+    const pendingBtn = screen.getByRole('button', { name: /Pending \(Start\)/i });
+    expect(pendingBtn).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(pendingBtn);
+    });
+    expect(onRegenerateMock).toHaveBeenCalledWith('vid-pending');
+  });
+
+  it('renders queued state when thumbnail_status is queued (active background job exists)', () => {
+    const videoQueued: ImportedVideo = {
+      ...baseVideo,
+      id: 'vid-queued',
+      thumbnail_status: 'queued',
+    };
+
+    render(
+      <MediaTable
+        videos={[videoQueued]}
         isLoading={false}
         onDeleteVideo={vi.fn()}
       />

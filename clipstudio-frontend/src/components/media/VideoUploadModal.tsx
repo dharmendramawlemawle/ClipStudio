@@ -48,6 +48,20 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
     enabled: isOpen,
   });
 
+  // Reset modal state on open
+  React.useEffect(() => {
+    if (isOpen) {
+      setSelectedFile(null);
+      setIsUploading(false);
+      setProgressPercent(0);
+      setUploadedBytes(0);
+      setTransferSpeed('');
+      setCurrentStage('idle');
+      setErrorMessage(null);
+      setDuplicateInfo(null);
+    }
+  }, [isOpen]);
+
   // Default to first workspace if not set
   React.useEffect(() => {
     if (workspaces.length > 0 && !workspaceId) {

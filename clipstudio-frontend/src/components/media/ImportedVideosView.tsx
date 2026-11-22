@@ -6,8 +6,9 @@ import {
   HardDrive,
   Clock,
   Search,
+  RefreshCw,
 } from 'lucide-react';
-import { fetchMedia, fetchWorkspaces, deleteMedia, regenerateThumbnail } from '../../api/client';
+import { fetchMedia, fetchWorkspaces, deleteMedia, regenerateThumbnail, reconcileThumbnails } from '../../api/client';
 import { VideoUploadModal } from './VideoUploadModal';
 import { MediaTable } from './MediaTable';
 
@@ -71,10 +72,23 @@ export const ImportedVideosView: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['media', selectedWorkspaceId] });
   };
 
+  const [isReconciling, setIsReconciling] = useState(false);
+
   const handleRegenerateThumbnail = async (videoId: string) => {
     await regenerateThumbnail(videoId);
     queryClient.invalidateQueries({ queryKey: ['media', selectedWorkspaceId] });
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
+  };
+
+  const handleReconcileThumbnails = async () => {
+    setIsReconciling(true);
+    try {
+      await reconcileThumbnails(selectedWorkspaceId || undefined);
+      queryClient.invalidateQueries({ queryKey: ['media', selectedWorkspaceId] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    } finally {
+      setIsReconciling(false);
+    }
   };
 
   const handleUploadSuccess = () => {
@@ -111,6 +125,17 @@ export const ImportedVideosView: React.FC = () => {
               ))}
             </select>
           </div>
+
+          {/* Reconcile Thumbnails Button */}
+          <button
+            onClick={handleReconcileThumbnails}
+            disabled={isReconciling}
+            title="Reconcile missing or pending thumbnails"
+            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-studio-800 hover:bg-studio-700 text-studio-300 hover:text-white text-xs font-medium transition disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isReconciling ? 'animate-spin text-brand-400' : ''}`} />
+            <span>{isReconciling ? 'Reconciling...' : 'Reconcile Thumbnails'}</span>
+          </button>
 
           {/* Import Video Button */}
           <button
