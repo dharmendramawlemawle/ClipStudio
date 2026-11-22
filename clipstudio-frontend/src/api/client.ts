@@ -198,3 +198,19 @@ export async function regenerateThumbnail(
   return res.json();
 }
 
+export async function reconcileThumbnails(
+  workspaceId?: string,
+): Promise<{ status: string; recovered_count: number; recovered_media_ids: string[]; message: string }> {
+  const url = workspaceId
+    ? `${API_BASE}/media/thumbnails/reconcile?workspace_id=${encodeURIComponent(workspaceId)}`
+    : `${API_BASE}/media/thumbnails/reconcile`;
+  const res = await fetch(url, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to reconcile thumbnails (${res.status})`);
+  }
+  return res.json();
+}
+

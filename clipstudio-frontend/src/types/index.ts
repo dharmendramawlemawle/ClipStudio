@@ -71,7 +71,7 @@ export interface ImportedVideo {
   container_format: string;
   metadata_json?: string | null;
   thumbnail_path?: string | null;
-  thumbnail_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'missing' | string;
+  thumbnail_status?: 'pending' | 'queued' | 'processing' | 'completed' | 'failed' | 'missing' | string;
   thumbnail_generated_at?: string | null;
   created_at: string;
   updated_at: string;

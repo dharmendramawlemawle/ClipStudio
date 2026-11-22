@@ -317,14 +317,67 @@ async def complete_upload(
 
         session_id = str(upload_id)
 
+        # Helper to ensure thumbnail recovery during idempotent retries (Finding CS-REV-2B2-001)
+        async def _ensure_thumbnail_job_for_existing(existing_v: ImportedVideo):
+            needs_recovery = False
+            if existing_v.thumbnail_status in ("pending", "failed", "missing") or not existing_v.thumbnail_path:
+                needs_recovery = True
+            else:
+                try:
+                    p = Path(existing_v.thumbnail_path)
+                    abs_thumb = p.resolve() if p.is_absolute() else safe_resolve_path(existing_v.thumbnail_path)
+                    if not abs_thumb.exists() or abs_thumb.stat().st_size == 0:
+                        needs_recovery = True
+                except Exception:
+                    needs_recovery = True
+
+            if needs_recovery:
+                try:
+                    active_job_res = await db.execute(
+                        select(ProcessingJob).where(
+                            ProcessingJob.entity_type == "media",
+                            ProcessingJob.entity_id == existing_v.id,
+                            ProcessingJob.job_type == "thumbnail_generation",
+                            ProcessingJob.status.in_(["queued", "running"]),
+                        )
+                    )
+                    if not active_job_res.scalars().first():
+                        m_id = str(existing_v.id)
+                        w_id = str(existing_v.workspace_id)
+                        f_path = str(existing_v.file_path)
+                        dur = float(existing_v.duration_seconds or 0.0)
+
+                        sp = Path(f_path)
+                        abs_source = sp.resolve() if sp.is_absolute() else safe_resolve_path(f_path)
+                        if abs_source.exists() and abs_source.is_file():
+                            from app.services.job_queue import job_queue
+                            # Release the read transaction on db to release SQLite lock before enqueuing
+                            await db.rollback()
+                            await job_queue.enqueue_thumbnail_job(
+                                media_id=m_id,
+                                workspace_id=w_id,
+                                file_path=f_path,
+                                duration_seconds=dur,
+                            )
+                            logger.info(f"Idempotent upload recovery: enqueued thumbnail job for media {m_id}")
+                        else:
+                            existing_v.thumbnail_status = "failed"
+                            await db.commit()
+                except Exception as rec_err:
+                    logger.warning(f"Failed to recover thumbnail during upload complete retry: {rec_err}")
+
         # Idempotent return if already completed (MF-01)
         if session.status == "completed":
             vid_result = await db.execute(select(ImportedVideo).where(ImportedVideo.id == session_id))
             existing_video = vid_result.scalar_one_or_none()
             if existing_video:
+                await _ensure_thumbnail_job_for_existing(existing_video)
+                # Re-query fresh video model so response reflects latest status
+                fresh_res = await db.execute(select(ImportedVideo).where(ImportedVideo.id == session_id))
+                return_video = fresh_res.scalar_one_or_none() or existing_video
                 return UploadCompleteResponse(
                     status="completed",
-                    video=ImportedVideoRead.model_validate(existing_video),
+                    video=ImportedVideoRead.model_validate(return_video),
                     message="Upload already completed successfully.",
                 )
             if session.sha256:
@@ -336,9 +389,12 @@ async def complete_upload(
                 )
                 existing_video = vid_result.scalar_one_or_none()
                 if existing_video:
+                    await _ensure_thumbnail_job_for_existing(existing_video)
+                    fresh_res = await db.execute(select(ImportedVideo).where(ImportedVideo.id == existing_video.id))
+                    return_video = fresh_res.scalar_one_or_none() or existing_video
                     return UploadCompleteResponse(
                         status="completed",
-                        video=ImportedVideoRead.model_validate(existing_video),
+                        video=ImportedVideoRead.model_validate(return_video),
                         message="Upload already completed successfully.",
                     )
             raise HTTPException(
@@ -553,8 +609,32 @@ async def list_media(
     res = await db.execute(query)
     videos = res.scalars().all()
 
+    # Query active thumbnail jobs to report accurate live status (CS-REV-2B2-001)
+    media_ids = [v.id for v in videos]
+    active_jobs: dict[str, str] = {}
+    if media_ids:
+        job_stmt = select(ProcessingJob.entity_id, ProcessingJob.status).where(
+            ProcessingJob.entity_type == "media",
+            ProcessingJob.entity_id.in_(media_ids),
+            ProcessingJob.job_type == "thumbnail_generation",
+            ProcessingJob.status.in_(["queued", "running"]),
+        )
+        job_res = await db.execute(job_stmt)
+        active_jobs = {row[0]: row[1] for row in job_res.all()}
+
+    items: list[ImportedVideoRead] = []
+    for v in videos:
+        item = ImportedVideoRead.model_validate(v)
+        # Accurate status: Never report queued or processing unless an actual active job exists
+        if v.thumbnail_status in ("pending", "processing"):
+            if v.id in active_jobs:
+                item.thumbnail_status = "processing" if active_jobs[v.id] == "running" else "queued"
+            else:
+                item.thumbnail_status = "pending"
+        items.append(item)
+
     return MediaListResponse(
-        items=[ImportedVideoRead.model_validate(v) for v in videos],
+        items=items,
         total=total,
         skip=skip,
         limit=limit,
@@ -574,7 +654,23 @@ async def get_media(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Media {media_id} not found.",
         )
-    return video
+
+    item = ImportedVideoRead.model_validate(video)
+    if video.thumbnail_status in ("pending", "processing"):
+        active_job_res = await db.execute(
+            select(ProcessingJob.status).where(
+                ProcessingJob.entity_type == "media",
+                ProcessingJob.entity_id == media_id,
+                ProcessingJob.job_type == "thumbnail_generation",
+                ProcessingJob.status.in_(["queued", "running"]),
+            )
+        )
+        active_status = active_job_res.scalars().first()
+        if active_status:
+            item.thumbnail_status = "processing" if active_status == "running" else "queued"
+        else:
+            item.thumbnail_status = "pending"
+    return item
 
 
 @router.delete("/{media_id}", status_code=status.HTTP_200_OK)
@@ -694,7 +790,10 @@ async def get_media_thumbnail_metadata(
     media_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieve detailed metadata and status for a media thumbnail."""
+    """Retrieve detailed metadata and status for a media thumbnail.
+
+    Returns actual image dimensions (width, height) extracted from the generated JPEG header.
+    """
     result = await db.execute(select(ImportedVideo).where(ImportedVideo.id == media_id))
     video = result.scalar_one_or_none()
     if not video:
@@ -703,27 +802,68 @@ async def get_media_thumbnail_metadata(
             detail=f"Media asset '{media_id}' not found.",
         )
 
+    from app.services.thumbnail import get_jpeg_dimensions
+
     file_size = None
+    actual_width = None
+    actual_height = None
+
     if video.thumbnail_path:
         try:
-            abs_p = safe_resolve_path(video.thumbnail_path)
-            if abs_p.exists():
+            p = Path(video.thumbnail_path)
+            abs_p = p.resolve() if p.is_absolute() else safe_resolve_path(video.thumbnail_path)
+            if abs_p.exists() and abs_p.is_file():
                 file_size = abs_p.stat().st_size
+                actual_width, actual_height = get_jpeg_dimensions(abs_p)
         except Exception:
             pass
+
+    # Accurate status checking (CS-REV-2B2-001)
+    active_job_res = await db.execute(
+        select(ProcessingJob).where(
+            ProcessingJob.entity_type == "media",
+            ProcessingJob.entity_id == media_id,
+            ProcessingJob.job_type == "thumbnail_generation",
+            ProcessingJob.status.in_(["queued", "running"]),
+        )
+    )
+    active_job = active_job_res.scalars().first()
+
+    effective_status = video.thumbnail_status
+    if video.thumbnail_status in ("pending", "processing"):
+        if active_job:
+            effective_status = "processing" if active_job.status == "running" else "queued"
+        else:
+            effective_status = "pending"
 
     thumb_url = f"/api/v1/media/{media_id}/thumbnail" if video.thumbnail_status == "completed" and video.thumbnail_path else None
 
     return ThumbnailMetadataResponse(
         media_id=video.id,
-        status=video.thumbnail_status,
+        status=effective_status,
         thumbnail_path=video.thumbnail_path,
         thumbnail_url=thumb_url,
-        width=settings.THUMBNAIL_WIDTH if video.thumbnail_status == "completed" else None,
-        height=None,
+        width=actual_width,
+        height=actual_height,
         file_size_bytes=file_size,
         generated_at=video.thumbnail_generated_at,
     )
+
+
+@router.post("/thumbnails/reconcile", status_code=status.HTTP_200_OK)
+async def reconcile_thumbnails(
+    workspace_id: str | None = Query(None, description="Optional workspace UUID to restrict reconciliation"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger workspace-wide or global reconciliation of missing, pending, or interrupted thumbnails."""
+    from app.services.job_queue import job_queue
+    recovered_ids = await job_queue.reconcile_pending_thumbnails(workspace_id=workspace_id)
+    return {
+        "status": "completed",
+        "recovered_count": len(recovered_ids),
+        "recovered_media_ids": recovered_ids,
+        "message": f"Successfully scheduled thumbnail generation for {len(recovered_ids)} media asset(s).",
+    }
 
 
 @router.post("/{media_id}/thumbnail/regenerate", status_code=status.HTTP_202_ACCEPTED)
@@ -769,19 +909,27 @@ async def regenerate_media_thumbnail(
             detail=f"Thumbnail generation is already in progress for media '{media_id}' (job {existing_job.id}).",
         )
 
+    v_id = str(video.id)
+    v_ws = str(video.workspace_id)
+    v_path = str(video.file_path)
+    v_dur = float(video.duration_seconds or 0.0)
+
+    # Release read transaction before enqueuing to prevent lock contention
+    await db.rollback()
+
     # Enqueue job
     from app.services.job_queue import job_queue
     job = await job_queue.enqueue_thumbnail_job(
-        media_id=video.id,
-        workspace_id=video.workspace_id,
-        file_path=video.file_path,
-        duration_seconds=video.duration_seconds,
+        media_id=v_id,
+        workspace_id=v_ws,
+        file_path=v_path,
+        duration_seconds=v_dur,
     )
 
     return {
         "status": "queued",
         "job_id": job.id,
-        "media_id": video.id,
+        "media_id": v_id,
         "message": f"Thumbnail generation job queued for media '{media_id}'.",
     }
 

@@ -1,4 +1,5 @@
 import os
+import struct
 from pathlib import Path
 from app.config import settings
 from app.core.exceptions import ClipStudioException
@@ -10,6 +11,67 @@ from app.services.storage import atomic_promote_file, safe_resolve_path
 class ThumbnailException(ClipStudioException):
     """Thumbnail generation or validation exception."""
     pass
+
+
+def get_jpeg_dimensions(file_path: Path | str) -> tuple[int | None, int | None]:
+    """Safely extract actual (width, height) dimensions from a JPEG image header without external dependencies.
+
+    Parses SOF markers (SOF0-SOF3, SOF5-SOF7, SOF9-SOF11) in pure Python.
+    Returns (None, None) if file is missing, corrupt, truncated, or not a JPEG.
+    """
+    p = Path(file_path)
+    if not p.exists() or not p.is_file() or p.stat().st_size < 4:
+        return (None, None)
+
+    try:
+        with open(p, "rb") as f:
+            if f.read(2) != b"\xff\xd8":
+                return (None, None)
+
+            while True:
+                marker = f.read(2)
+                if len(marker) < 2 or marker[0] != 0xFF:
+                    return (None, None)
+
+                # Skip any fill bytes
+                while marker[1] == 0xFF:
+                    next_byte = f.read(1)
+                    if not next_byte:
+                        return (None, None)
+                    marker = b"\xff" + next_byte
+
+                m = marker[1]
+                # EOI (End of Image) or SOS (Start of Scan) - stop before entropy data
+                if m in (0xD9, 0xDA):
+                    return (None, None)
+
+                # SOF markers containing width & height
+                # 0xC0=SOF0 (baseline), 0xC1=SOF1 (extended), 0xC2=SOF2 (progressive),
+                # 0xC3=SOF3, 0xC5=SOF5, 0xC6=SOF6, 0xC7=SOF7, 0xC9=SOF9, 0xCA=SOF10, 0xCB=SOF11
+                if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB):
+                    length_bytes = f.read(2)
+                    if len(length_bytes) < 2:
+                        return (None, None)
+                    _precision = f.read(1)
+                    height_bytes = f.read(2)
+                    width_bytes = f.read(2)
+                    if len(height_bytes) < 2 or len(width_bytes) < 2:
+                        return (None, None)
+                    height = struct.unpack(">H", height_bytes)[0]
+                    width = struct.unpack(">H", width_bytes)[0]
+                    return (width, height)
+                else:
+                    # Skip variable-length segment
+                    length_bytes = f.read(2)
+                    if len(length_bytes) < 2:
+                        return (None, None)
+                    seg_len = struct.unpack(">H", length_bytes)[0]
+                    if seg_len < 2:
+                        return (None, None)
+                    f.seek(seg_len - 2, os.SEEK_CUR)
+    except Exception as exc:
+        logger.debug(f"Failed to read JPEG dimensions from {p}: {exc}")
+        return (None, None)
 
 
 def calculate_thumbnail_timestamp(duration_seconds: float) -> float:

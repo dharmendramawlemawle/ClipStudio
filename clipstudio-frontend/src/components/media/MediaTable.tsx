@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FileVideo,
   Trash2,
@@ -14,8 +14,8 @@ import {
   X,
   Image as ImageIcon,
 } from 'lucide-react';
-import { ImportedVideo } from '../../types';
-import { getThumbnailUrl, regenerateThumbnail } from '../../api/client';
+import { ImportedVideo, ThumbnailMetadata } from '../../types';
+import { getThumbnailUrl, regenerateThumbnail, fetchThumbnailMetadata } from '../../api/client';
 
 interface MediaTableProps {
   videos: ImportedVideo[];
@@ -35,6 +35,17 @@ export const MediaTable: React.FC<MediaTableProps> = ({
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [previewVideo, setPreviewVideo] = useState<ImportedVideo | null>(null);
+  const [previewMetadata, setPreviewMetadata] = useState<ThumbnailMetadata | null>(null);
+
+  useEffect(() => {
+    if (previewVideo && previewVideo.thumbnail_status === 'completed') {
+      fetchThumbnailMetadata(previewVideo.id)
+        .then((meta) => setPreviewMetadata(meta))
+        .catch(() => setPreviewMetadata(null));
+    } else {
+      setPreviewMetadata(null);
+    }
+  }, [previewVideo]);
 
   const formatDuration = (seconds: number) => {
     if (!seconds || seconds <= 0) return '0:00';
@@ -230,10 +241,24 @@ export const MediaTable: React.FC<MediaTableProps> = ({
                             {regeneratingId === v.id ? 'Retrying...' : 'Retry'}
                           </button>
                         </div>
-                      ) : thumbStatus === 'pending' || thumbStatus === 'queued' ? (
+                      ) : thumbStatus === 'queued' ? (
                         <div className="w-28 h-16 rounded-xl bg-studio-950/80 border border-studio-800 flex flex-col items-center justify-center space-y-1 shrink-0 p-1 text-center">
                           <Clock className="w-3.5 h-3.5 text-amber-500/80" />
                           <span className="text-[9px] text-studio-400 font-medium">Queued</span>
+                        </div>
+                      ) : thumbStatus === 'pending' || thumbStatus === 'pending_recovery' ? (
+                        <div className="w-28 h-16 rounded-xl bg-amber-950/20 border border-amber-500/30 flex flex-col items-center justify-center space-y-1 shrink-0 p-1 text-center">
+                          <Clock className="w-3.5 h-3.5 text-amber-400" />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRegenerate(v.id);
+                            }}
+                            disabled={regeneratingId === v.id}
+                            className="text-[9px] text-amber-400 hover:text-amber-300 font-medium underline disabled:opacity-50"
+                          >
+                            {regeneratingId === v.id ? 'Starting...' : 'Pending (Start)'}
+                          </button>
                         </div>
                       ) : (
                         <div className="w-28 h-16 rounded-xl bg-studio-950/80 border border-studio-800 flex flex-col items-center justify-center space-y-1 shrink-0 p-1 text-center">
@@ -394,8 +419,15 @@ export const MediaTable: React.FC<MediaTableProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 text-xs text-studio-400">
               <div className="space-y-1">
                 <p className="text-white font-medium">
-                  {previewVideo.width}x{previewVideo.height} @ {previewVideo.fps}fps â€¢ {formatDuration(previewVideo.duration_seconds)}
+                  Video: {previewVideo.width}x{previewVideo.height} @ {previewVideo.fps}fps • {formatDuration(previewVideo.duration_seconds)}
                 </p>
+                {previewMetadata && previewMetadata.width && previewMetadata.height ? (
+                  <p className="text-emerald-400 font-medium text-[11px]">
+                    Thumbnail: {previewMetadata.width}x{previewMetadata.height}px • {formatBytes(previewMetadata.file_size_bytes || 0)}
+                  </p>
+                ) : (
+                  <p className="text-studio-500 text-[11px]">Thumbnail: Actual dimensions loading...</p>
+                )}
                 <p className="font-mono text-[11px] text-studio-500">
                   ID: {previewVideo.id}
                 </p>
