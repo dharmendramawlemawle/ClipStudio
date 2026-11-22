@@ -317,6 +317,10 @@ class JobQueueService:
                 duration_seconds=duration,
             )
 
+            from app.services.thumbnail import get_jpeg_dimensions
+            actual_w, actual_h = get_jpeg_dimensions(promoted_path)
+            file_size = promoted_path.stat().st_size if promoted_path.exists() else 0
+
             # 3. Update video record with generated thumbnail
             now = datetime.now(timezone.utc)
             async with async_session_factory() as session:
@@ -335,7 +339,9 @@ class JobQueueService:
                 message="Thumbnail generated successfully.",
                 result_data={
                     "thumbnail_path": rel_path,
-                    "file_size_bytes": promoted_path.stat().st_size if promoted_path.exists() else 0,
+                    "file_size_bytes": file_size,
+                    "width": actual_w,
+                    "height": actual_h,
                 },
             )
 
@@ -345,6 +351,9 @@ class JobQueueService:
                 "workspace_id": workspace_id,
                 "status": "completed",
                 "thumbnail_url": f"/api/v1/media/{media_id}/thumbnail",
+                "width": actual_w,
+                "height": actual_h,
+                "file_size_bytes": file_size,
                 "timestamp": now.isoformat(),
             })
 
@@ -378,78 +387,109 @@ class JobQueueService:
         Atomically sets ImportedVideo.thumbnail_status = 'pending' and creates ProcessingJob
         in a single transaction to prevent race conditions and SQLite multi-session deadlocks.
         Dispatches background worker only after database transaction commit succeeds.
+        On any enqueue failure, transitions media record to 'failed' and logs full diagnostics.
         """
-        if self._fault_injection_fail_enqueue:
-            raise RuntimeError("Simulated thumbnail job enqueue failure (fault injection active)")
+        try:
+            if self._fault_injection_fail_enqueue:
+                raise RuntimeError("Simulated thumbnail job enqueue failure (fault injection active)")
 
-        lock = await self._get_media_lock(media_id)
-        async with lock:
-            async with async_session_factory() as session:
-                stmt = select(ProcessingJob).where(
-                    ProcessingJob.entity_type == "media",
-                    ProcessingJob.entity_id == media_id,
-                    ProcessingJob.job_type == "thumbnail_generation",
-                    ProcessingJob.status.in_(["queued", "running"]),
-                )
-                res = await session.execute(stmt)
-                existing = res.scalar_one_or_none()
-                if existing:
-                    logger.info(
-                        f"Active thumbnail job {existing.id} already exists for media {media_id}. Reusing existing job."
+            lock = await self._get_media_lock(media_id)
+            async with lock:
+                async with async_session_factory() as session:
+                    stmt = select(ProcessingJob).where(
+                        ProcessingJob.entity_type == "media",
+                        ProcessingJob.entity_id == media_id,
+                        ProcessingJob.job_type == "thumbnail_generation",
+                        ProcessingJob.status.in_(["queued", "running"]),
                     )
-                    session.expunge(existing)
-                    return existing
+                    res = await session.execute(stmt)
+                    existing = res.scalar_one_or_none()
+                    if existing:
+                        logger.info(
+                            f"Active thumbnail job {existing.id} already exists for media {media_id}. Reusing existing job."
+                        )
+                        session.expunge(existing)
+                        return existing
 
-                from app.models.video import ImportedVideo
-                video = await session.get(ImportedVideo, media_id)
-                if video:
-                    video.thumbnail_status = "pending"
+                    from app.models.video import ImportedVideo
+                    video = await session.get(ImportedVideo, media_id)
+                    if video:
+                        video.thumbnail_status = "pending"
 
-                payload = {
-                    "media_id": media_id,
-                    "workspace_id": workspace_id,
-                    "file_path": file_path,
-                    "duration": duration_seconds,
-                }
-                job = ProcessingJob(
-                    job_type="thumbnail_generation",
-                    entity_type="media",
-                    entity_id=media_id,
+                    payload = {
+                        "media_id": media_id,
+                        "workspace_id": workspace_id,
+                        "file_path": file_path,
+                        "duration": duration_seconds,
+                    }
+                    job = ProcessingJob(
+                        job_type="thumbnail_generation",
+                        entity_type="media",
+                        entity_id=media_id,
+                        status="queued",
+                        progress_percent=0.0,
+                        current_step="Queued in scheduler",
+                        result_data=json.dumps(payload),
+                    )
+                    session.add(job)
+                    await session.commit()
+                    await session.refresh(job)
+                    session.expunge(job)
+                    job_id = job.id
+
+                # Broadcast initial queued status
+                await ws_manager.broadcast_job_progress(
+                    job_id=job_id,
                     status="queued",
                     progress_percent=0.0,
                     current_step="Queued in scheduler",
-                    result_data=json.dumps(payload),
+                    message="Job thumbnail_generation has been queued.",
                 )
-                session.add(job)
-                await session.commit()
-                await session.refresh(job)
-                session.expunge(job)
-                job_id = job.id
+                try:
+                    await ws_manager.broadcast({
+                        "event_type": "thumbnail_updated",
+                        "media_id": media_id,
+                        "workspace_id": workspace_id,
+                        "status": "queued",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except Exception:
+                    pass
 
-            # Broadcast initial queued status
-            await ws_manager.broadcast_job_progress(
-                job_id=job_id,
-                status="queued",
-                progress_percent=0.0,
-                current_step="Queued in scheduler",
-                message="Job thumbnail_generation has been queued.",
+                # Dispatch async execution task ONLY after database transaction has committed
+                task = asyncio.create_task(self._execute_job_wrapper(job_id, "thumbnail_generation", payload))
+                self._active_tasks[job_id] = task
+
+                return job
+
+        except Exception as exc:
+            logger.error(
+                f"Failed to enqueue thumbnail job for media {media_id} in workspace {workspace_id}: {exc}",
+                exc_info=True,
             )
+            # Ensure media thumbnail_status transitions to 'failed' rather than staying in an invalid 'pending' state
+            try:
+                async with async_session_factory() as fail_session:
+                    from app.models.video import ImportedVideo
+                    v = await fail_session.get(ImportedVideo, media_id)
+                    if v and v.thumbnail_status in ("pending", "processing"):
+                        v.thumbnail_status = "failed"
+                        await fail_session.commit()
+            except Exception as mark_err:
+                logger.error(f"Failed to mark media {media_id} thumbnail as failed after enqueue failure: {mark_err}")
+
             try:
                 await ws_manager.broadcast({
                     "event_type": "thumbnail_updated",
                     "media_id": media_id,
                     "workspace_id": workspace_id,
-                    "status": "queued",
+                    "status": "failed",
+                    "error": str(exc),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
             except Exception:
                 pass
-
-            # Dispatch async execution task ONLY after database transaction has committed
-            task = asyncio.create_task(self._execute_job_wrapper(job_id, "thumbnail_generation", payload))
-            self._active_tasks[job_id] = task
-
-            return job
+            raise
 
     async def reconcile_pending_thumbnails(self, workspace_id: str | None = None) -> list[str]:
         """Scans imported videos for pending, interrupted, or missing thumbnails and safely schedules generation.

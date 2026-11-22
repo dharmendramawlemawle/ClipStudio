@@ -568,7 +568,7 @@ async def complete_upload(
         except Exception:
             pass
 
-        # 8. Auto-trigger thumbnail generation job (Phase 2B.2)
+        # 8. Auto-trigger thumbnail generation job (Phase 2B.2 & 2B.3)
         try:
             from app.services.job_queue import job_queue
             await job_queue.enqueue_thumbnail_job(
@@ -578,7 +578,29 @@ async def complete_upload(
                 duration_seconds=video.duration_seconds,
             )
         except Exception as thumb_err:
-            logger.warning(f"Failed to auto-enqueue thumbnail job for media {video.id}: {thumb_err}")
+            logger.error(
+                f"Failed to auto-enqueue thumbnail job for media {video.id} in workspace {video.workspace_id}: {thumb_err}",
+                exc_info=True,
+            )
+            # Ensure thumbnail_status is recorded as failed in the DB to avoid indefinite invalid pending state (Issue A)
+            try:
+                video.thumbnail_status = "failed"
+                await db.commit()
+                await db.refresh(video)
+            except Exception as update_err:
+                logger.error(f"Failed to record thumbnail failure status for media {video.id}: {update_err}")
+
+            try:
+                await ws_manager.broadcast({
+                    "event_type": "thumbnail_updated",
+                    "media_id": video.id,
+                    "workspace_id": video.workspace_id,
+                    "status": "failed",
+                    "error": str(thumb_err),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
 
         return UploadCompleteResponse(
             status="completed",

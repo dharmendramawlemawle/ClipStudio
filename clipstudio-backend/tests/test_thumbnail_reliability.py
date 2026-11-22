@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
+import json
 import os
 import shutil
 import tempfile
@@ -353,12 +354,14 @@ async def test_enqueue_failure_followed_by_recovery(tmp_path):
         comp_res = await client.post(f"/api/v1/media/uploads/{upload_id}/complete", json={})
         assert comp_res.status_code == 200  # import still succeeds gracefully!
         assert comp_res.json()["status"] == "completed"
+        # Issue A: Ensure thumbnail_status transitions to 'failed' rather than invalid 'pending'
+        assert comp_res.json()["video"]["thumbnail_status"] == "failed"
 
-    # Step 2: Verify in DB that video exists, thumbnail_status is 'pending', and no job was created
+    # Step 2: Verify in DB that video exists, thumbnail_status is 'failed', and no job was created
     async with async_session_factory() as session:
         v = await session.get(ImportedVideo, upload_id)
         assert v is not None
-        assert v.thumbnail_status == "pending"
+        assert v.thumbnail_status == "failed"
         jobs = (await session.execute(select(ProcessingJob).where(ProcessingJob.entity_id == upload_id))).scalars().all()
         assert len(jobs) == 0
 
@@ -792,3 +795,97 @@ async def test_thumbnail_job_cancellation_and_terminal_state(tmp_path):
     # Cancel job
     res = await job_queue.cancel_job(job.id)
     assert res is True or job.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_job_result_data_captures_actual_dimensions(tmp_path):
+    """Scenario 16: Completed thumbnail generation job persists actual width, height, and file size in result_data."""
+    ws_id = f"ws_dim_{uuid.uuid4().hex[:10]}"
+    media_id = f"m_dim_{uuid.uuid4().hex[:10]}"
+    video_file = tmp_path / "dim_video.mp4"
+    # Create 1920x1080 video -> generated thumbnail scaled to 640x360
+    await create_synthetic_video(video_file, width=1920, height=1080, duration_seconds=1.5)
+
+    async with async_session_factory() as session:
+        ws = Workspace(id=ws_id, name="Dim WS", local_storage_path="data/media")
+        session.add(ws)
+        v = ImportedVideo(
+            id=media_id,
+            workspace_id=ws_id,
+            file_name="dim_video.mp4",
+            file_path=str(video_file),
+            duration_seconds=1.5,
+            width=1920,
+            height=1080,
+            status="ready",
+            thumbnail_status="pending",
+        )
+        session.add(v)
+        await session.commit()
+
+    job = await job_queue.enqueue_thumbnail_job(
+        media_id=media_id,
+        workspace_id=ws_id,
+        file_path=str(video_file),
+        duration_seconds=1.5,
+    )
+
+    # Wait for completion
+    for _ in range(80):
+        async with async_session_factory() as session:
+            j = await session.get(ProcessingJob, job.id)
+            if j and j.status == "completed":
+                break
+        await asyncio.sleep(0.1)
+
+    async with async_session_factory() as session:
+        completed_job = await session.get(ProcessingJob, job.id)
+        assert completed_job is not None
+        assert completed_job.status == "completed"
+        assert completed_job.result_data is not None
+        result_info = json.loads(completed_job.result_data)
+        assert result_info["width"] == 640
+        assert result_info["height"] == 360
+        assert result_info["file_size_bytes"] > 0
+
+
+@pytest.mark.asyncio
+async def test_direct_enqueue_failure_marks_media_failed(tmp_path):
+    """Scenario 17: Direct enqueue_thumbnail_job failure transitions media record to failed rather than pending."""
+    ws_id = f"ws_direct_{uuid.uuid4().hex[:10]}"
+    media_id = f"m_direct_{uuid.uuid4().hex[:10]}"
+    video_file = tmp_path / "direct_video.mp4"
+    await create_synthetic_video(video_file, width=640, height=360, duration_seconds=1.0)
+
+    async with async_session_factory() as session:
+        ws = Workspace(id=ws_id, name="Direct Fail WS", local_storage_path="data/media")
+        session.add(ws)
+        v = ImportedVideo(
+            id=media_id,
+            workspace_id=ws_id,
+            file_name="direct_video.mp4",
+            file_path=str(video_file),
+            duration_seconds=1.0,
+            status="ready",
+            thumbnail_status="pending",
+        )
+        session.add(v)
+        await session.commit()
+
+    job_queue._fault_injection_fail_enqueue = True
+    try:
+        with pytest.raises(RuntimeError, match="Simulated thumbnail job enqueue failure"):
+            await job_queue.enqueue_thumbnail_job(
+                media_id=media_id,
+                workspace_id=ws_id,
+                file_path=str(video_file),
+                duration_seconds=1.0,
+            )
+    finally:
+        job_queue._fault_injection_fail_enqueue = False
+
+    async with async_session_factory() as session:
+        v = await session.get(ImportedVideo, media_id)
+        assert v is not None
+        assert v.thumbnail_status == "failed"
+
