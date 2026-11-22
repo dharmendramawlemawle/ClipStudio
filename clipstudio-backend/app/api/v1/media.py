@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
@@ -20,7 +21,7 @@ from app.schemas.upload import (
     UploadInitiateRequest,
     UploadSessionRead,
 )
-from app.schemas.video import ImportedVideoRead, MediaListResponse
+from app.schemas.video import ImportedVideoRead, MediaListResponse, ThumbnailMetadataResponse
 from app.services.media_probe import MediaValidationException, extract_media_specs, probe_media_file
 from app.services.storage import (
     StorageException,
@@ -411,7 +412,7 @@ async def complete_upload(
             ImportedVideo.id != session_id,
         )
         dup_result = await db.execute(dup_query)
-        existing_dup = dup_result.scalar_one_or_none()
+        existing_dup = dup_result.scalars().first()
 
         if existing_dup and not payload.confirm_duplicate:
             return UploadCompleteResponse(
@@ -511,6 +512,18 @@ async def complete_upload(
         except Exception:
             pass
 
+        # 8. Auto-trigger thumbnail generation job (Phase 2B.2)
+        try:
+            from app.services.job_queue import job_queue
+            await job_queue.enqueue_thumbnail_job(
+                media_id=video.id,
+                workspace_id=video.workspace_id,
+                file_path=video.file_path,
+                duration_seconds=video.duration_seconds,
+            )
+        except Exception as thumb_err:
+            logger.warning(f"Failed to auto-enqueue thumbnail job for media {video.id}: {thumb_err}")
+
         return UploadCompleteResponse(
             status="completed",
             video=ImportedVideoRead.model_validate(video),
@@ -585,7 +598,7 @@ async def delete_media(
             ProcessingJob.status.in_(["queued", "running"]),
         )
     )
-    if active_jobs.scalar_one_or_none():
+    if active_jobs.scalars().first() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete media while an active processing job is using it.",
@@ -603,7 +616,12 @@ async def delete_media(
     # 3. Safely delete physical file if not shared
     if not is_shared:
         try:
-            abs_path = safe_resolve_path(video.file_path)
+            p = Path(video.file_path)
+            if p.is_absolute():
+                abs_path = p.resolve()
+            else:
+                abs_path = safe_resolve_path(video.file_path)
+
             if abs_path.exists() and abs_path.is_file():
                 abs_path.unlink(missing_ok=True)
                 # Remove media_id directory if empty
@@ -615,8 +633,155 @@ async def delete_media(
                 detail=f"Failed to delete media file from storage: {exc}",
             )
 
-    # 4. Remove database record
+    # 4. Safely delete thumbnail file/dir if present
+    if video.thumbnail_path:
+        try:
+            thumb_abs = safe_resolve_path(video.thumbnail_path)
+            if thumb_abs.exists() and thumb_abs.is_file():
+                thumb_abs.unlink(missing_ok=True)
+                if thumb_abs.parent.exists() and not any(thumb_abs.parent.iterdir()):
+                    thumb_abs.parent.rmdir()
+        except Exception:
+            pass
+
+    # 5. Remove database record
     await db.delete(video)
     await db.commit()
 
     return {"status": "deleted", "media_id": media_id}
+
+
+@router.get("/{media_id}/thumbnail", response_class=FileResponse)
+async def get_media_thumbnail(
+    media_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the generated JPEG thumbnail for an imported video asset."""
+    result = await db.execute(select(ImportedVideo).where(ImportedVideo.id == media_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Media asset '{media_id}' not found.",
+        )
+
+    if not video.thumbnail_path or video.thumbnail_status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Thumbnail not available for media '{media_id}' (status: {video.thumbnail_status}).",
+        )
+
+    abs_thumb_path = safe_resolve_path(video.thumbnail_path)
+    if not abs_thumb_path.exists() or not abs_thumb_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Thumbnail file is missing from storage for media '{media_id}'.",
+        )
+
+    return FileResponse(
+        path=abs_thumb_path,
+        media_type="image/jpeg",
+        filename=f"{media_id}_thumbnail.jpg",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Thumbnail-Status": video.thumbnail_status,
+        },
+    )
+
+
+@router.get("/{media_id}/thumbnail/metadata", response_model=ThumbnailMetadataResponse)
+async def get_media_thumbnail_metadata(
+    media_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve detailed metadata and status for a media thumbnail."""
+    result = await db.execute(select(ImportedVideo).where(ImportedVideo.id == media_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Media asset '{media_id}' not found.",
+        )
+
+    file_size = None
+    if video.thumbnail_path:
+        try:
+            abs_p = safe_resolve_path(video.thumbnail_path)
+            if abs_p.exists():
+                file_size = abs_p.stat().st_size
+        except Exception:
+            pass
+
+    thumb_url = f"/api/v1/media/{media_id}/thumbnail" if video.thumbnail_status == "completed" and video.thumbnail_path else None
+
+    return ThumbnailMetadataResponse(
+        media_id=video.id,
+        status=video.thumbnail_status,
+        thumbnail_path=video.thumbnail_path,
+        thumbnail_url=thumb_url,
+        width=settings.THUMBNAIL_WIDTH if video.thumbnail_status == "completed" else None,
+        height=None,
+        file_size_bytes=file_size,
+        generated_at=video.thumbnail_generated_at,
+    )
+
+
+@router.post("/{media_id}/thumbnail/regenerate", status_code=status.HTTP_202_ACCEPTED)
+async def regenerate_media_thumbnail(
+    media_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger or retry thumbnail generation for an imported video asset."""
+    result = await db.execute(select(ImportedVideo).where(ImportedVideo.id == media_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Media asset '{media_id}' not found.",
+        )
+
+    # Verify source file exists
+    p = Path(video.file_path)
+    if p.is_absolute():
+        source_file = p.resolve()
+    else:
+        source_file = safe_resolve_path(video.file_path)
+
+    if not source_file.exists():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Source video file does not exist on disk: {video.file_path}",
+        )
+
+    # Check for active thumbnail job
+    active_job_res = await db.execute(
+        select(ProcessingJob).where(
+            ProcessingJob.entity_type == "media",
+            ProcessingJob.entity_id == media_id,
+            ProcessingJob.job_type == "thumbnail_generation",
+            ProcessingJob.status.in_(["queued", "running"]),
+        )
+    )
+    existing_job = active_job_res.scalar_one_or_none()
+    if existing_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Thumbnail generation is already in progress for media '{media_id}' (job {existing_job.id}).",
+        )
+
+    # Enqueue job
+    from app.services.job_queue import job_queue
+    job = await job_queue.enqueue_thumbnail_job(
+        media_id=video.id,
+        workspace_id=video.workspace_id,
+        file_path=video.file_path,
+        duration_seconds=video.duration_seconds,
+    )
+
+    return {
+        "status": "queued",
+        "job_id": job.id,
+        "media_id": video.id,
+        "message": f"Thumbnail generation job queued for media '{media_id}'.",
+    }
+

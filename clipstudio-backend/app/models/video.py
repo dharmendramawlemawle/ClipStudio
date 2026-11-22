@@ -1,5 +1,6 @@
+from datetime import datetime
 from typing import TYPE_CHECKING
-from sqlalchemy import BigInteger, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, generate_uuid
 
@@ -31,5 +32,11 @@ class ImportedVideo(Base, TimestampMixin):
     container_format: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Thumbnail integration (Phase 2B.2)
+    thumbnail_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    thumbnail_status: Mapped[str] = mapped_column(String(50), default="pending", index=True, nullable=False)
+    thumbnail_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Relationships
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="videos")
+

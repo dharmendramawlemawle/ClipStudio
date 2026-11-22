@@ -47,8 +47,9 @@ export function App() {
 
   // 4. WebSocket progress event handler (memoized with useCallback)
   const handleJobProgress = useCallback((event: JobProgressEvent) => {
-    if (event.event_type === 'media_imported') {
+    if (event.event_type === 'media_imported' || event.event_type === 'thumbnail_updated') {
       queryClient.invalidateQueries({ queryKey: ['media'] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
       return;
     }
 
@@ -83,6 +84,7 @@ export function App() {
 
     // Invalidate & refresh query cache so jobs table is synchronized
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    queryClient.invalidateQueries({ queryKey: ['media'] });
   }, [queryClient]);
 
   // 5. Connect WebSocket

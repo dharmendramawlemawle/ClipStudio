@@ -16,6 +16,9 @@ class ImportedVideoBase(BaseModel):
     sha256: str | None = None
     container_format: str = ""
     metadata_json: str | None = None
+    thumbnail_path: str | None = None
+    thumbnail_status: str = "pending"
+    thumbnail_generated_at: datetime | None = None
 
 
 class ImportedVideoCreate(ImportedVideoBase):
@@ -36,3 +39,16 @@ class MediaListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class ThumbnailMetadataResponse(BaseModel):
+    media_id: str
+    status: str  # pending, processing, completed, failed
+    thumbnail_path: str | None = None
+    thumbnail_url: str | None = None
+    width: int | None = None
+    height: int | None = None
+    file_size_bytes: int | None = None
+    generated_at: datetime | None = None
+    error_message: str | None = None
+
