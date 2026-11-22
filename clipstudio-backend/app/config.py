@@ -17,8 +17,10 @@ class Settings(BaseSettings):
     STORAGE_DIR: Path = BASE_DIR / "data"
     MEDIA_DIR: Path = STORAGE_DIR / "media"
     MEDIA_ORIGINALS_DIR: Path = MEDIA_DIR / "originals"
+    MEDIA_THUMBNAILS_DIR: Path = MEDIA_DIR / "thumbnails"
     TEMP_DIR: Path = STORAGE_DIR / "temp"
     UPLOADS_TEMP_DIR: Path = TEMP_DIR / "uploads"
+    THUMBNAILS_TEMP_DIR: Path = TEMP_DIR / "thumbnails"
 
     # SQLite Database Configuration
     DB_FILE: Path = STORAGE_DIR / "clipstudio.db"
@@ -61,6 +63,13 @@ class Settings(BaseSettings):
     FFMPEG_SUBPROCESS_TIMEOUT_SECONDS: float = 3600.0  # 1 hour maximum per job
     FFMPEG_STDERR_MAX_BYTES: int = 256 * 1024  # 256 KB bounded circular buffer
 
+    # Thumbnail Generation Configuration (Phase 2B.2)
+    THUMBNAIL_WIDTH: int = 640
+    THUMBNAIL_QUALITY: int = 2  # JPEG quality scale in ffmpeg (q:v 2 is high quality)
+    THUMBNAIL_DEFAULT_TIMESTAMP_PERCENT: float = 0.10  # 10% into video
+    THUMBNAIL_MIN_TIMESTAMP_SECONDS: float = 0.5
+    THUMBNAIL_SUBPROCESS_TIMEOUT_SECONDS: float = 30.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -74,5 +83,7 @@ settings = Settings()
 settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 settings.MEDIA_ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
+settings.MEDIA_THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
 settings.UPLOADS_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+settings.THUMBNAILS_TEMP_DIR.mkdir(parents=True, exist_ok=True)

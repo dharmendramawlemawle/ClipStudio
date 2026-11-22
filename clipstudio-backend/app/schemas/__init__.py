@@ -1,6 +1,12 @@
 from app.schemas.health import HealthResponse
 from app.schemas.workspace import WorkspaceBase, WorkspaceCreate, WorkspaceRead
-from app.schemas.video import ImportedVideoBase, ImportedVideoCreate, ImportedVideoRead, MediaListResponse
+from app.schemas.video import (
+    ImportedVideoBase,
+    ImportedVideoCreate,
+    ImportedVideoRead,
+    MediaListResponse,
+    ThumbnailMetadataResponse,
+)
 from app.schemas.job import JobCreate, JobRead, JobProgressEvent
 from app.schemas.upload import (
     UploadInitiateRequest,
@@ -19,6 +25,7 @@ __all__ = [
     "ImportedVideoCreate",
     "ImportedVideoRead",
     "MediaListResponse",
+    "ThumbnailMetadataResponse",
     "JobCreate",
     "JobRead",
     "JobProgressEvent",
@@ -28,3 +35,4 @@ __all__ = [
     "UploadCompleteRequest",
     "UploadCompleteResponse",
 ]
+

@@ -6,6 +6,7 @@ import {
   MediaListResponse,
   UploadSession,
   UploadCompleteResponse,
+  ThumbnailMetadata,
 } from '../types';
 
 const API_BASE = '/api/v1';
@@ -168,3 +169,32 @@ export async function completeUpload(
   }
   return res.json();
 }
+
+// --- Thumbnail APIs (Phase 2B.2) ---
+
+export function getThumbnailUrl(mediaId: string): string {
+  return `${API_BASE}/media/${mediaId}/thumbnail`;
+}
+
+export async function fetchThumbnailMetadata(mediaId: string): Promise<ThumbnailMetadata> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/thumbnail/metadata`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to fetch thumbnail metadata (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function regenerateThumbnail(
+  mediaId: string,
+): Promise<{ status: string; job_id: string; media_id: string; message: string }> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/thumbnail/regenerate`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to regenerate thumbnail (${res.status})`);
+  }
+  return res.json();
+}
+

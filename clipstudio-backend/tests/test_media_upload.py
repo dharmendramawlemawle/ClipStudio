@@ -286,7 +286,13 @@ async def test_full_media_upload_lifecycle(tmp_path):
         assert get_res.status_code == 200
         assert get_res.json()["id"] == media_id
 
-        # 10. Delete media
+        # 10. Wait for auto-enqueued thumbnail job before deleting
+        for _ in range(60):
+            meta = await client.get(f"/api/v1/media/{media_id}/thumbnail/metadata")
+            if meta.status_code == 200 and meta.json().get("status") in ["completed", "failed"]:
+                break
+            await asyncio.sleep(0.05)
+
         del_res = await client.delete(f"/api/v1/media/{media_id}")
         assert del_res.status_code == 200
         assert del_res.json()["status"] == "deleted"
@@ -573,6 +579,13 @@ async def test_media_delete_active_job_conflict(tmp_path):
         abs_media_path = safe_resolve_path(rel_path)
         assert abs_media_path.exists()
 
+        # Wait for auto-enqueued thumbnail job to reach terminal state
+        for _ in range(60):
+            meta = await client.get(f"/api/v1/media/{media_id}/thumbnail/metadata")
+            if meta.status_code == 200 and meta.json().get("status") in ["completed", "failed"]:
+                break
+            await asyncio.sleep(0.05)
+
         # 2. Create an active processing job referencing this media_id
         from app.models.base import generate_uuid
         job_id = generate_uuid()
@@ -598,10 +611,14 @@ async def test_media_delete_active_job_conflict(tmp_path):
         assert get_res.status_code == 200
         assert get_res.json()["id"] == media_id
 
-        # 4. Mark job as completed in DB
+        # 4. Mark all active jobs for this media as completed in DB
+        from sqlalchemy import update
         async with async_session_factory() as session:
-            job_in_db = await session.get(ProcessingJob, job_id)
-            job_in_db.status = "completed"
+            await session.execute(
+                update(ProcessingJob)
+                .where(ProcessingJob.entity_id == media_id)
+                .values(status="completed")
+            )
             await session.commit()
 
         # 5. Deletion must now succeed

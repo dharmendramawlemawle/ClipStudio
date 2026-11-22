@@ -7,7 +7,7 @@ import {
   Clock,
   Search,
 } from 'lucide-react';
-import { fetchMedia, fetchWorkspaces, deleteMedia } from '../../api/client';
+import { fetchMedia, fetchWorkspaces, deleteMedia, regenerateThumbnail } from '../../api/client';
 import { VideoUploadModal } from './VideoUploadModal';
 import { MediaTable } from './MediaTable';
 
@@ -69,6 +69,12 @@ export const ImportedVideosView: React.FC = () => {
   const handleDelete = async (videoId: string) => {
     await deleteMedia(videoId);
     queryClient.invalidateQueries({ queryKey: ['media', selectedWorkspaceId] });
+  };
+
+  const handleRegenerateThumbnail = async (videoId: string) => {
+    await regenerateThumbnail(videoId);
+    queryClient.invalidateQueries({ queryKey: ['media', selectedWorkspaceId] });
+    queryClient.invalidateQueries({ queryKey: ['jobs'] });
   };
 
   const handleUploadSuccess = () => {
@@ -175,6 +181,7 @@ export const ImportedVideosView: React.FC = () => {
         videos={filteredVideos}
         isLoading={isMediaLoading}
         onDeleteVideo={handleDelete}
+        onRegenerateThumbnail={handleRegenerateThumbnail}
       />
 
       {/* Upload Modal */}

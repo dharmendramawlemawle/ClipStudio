@@ -32,13 +32,15 @@ export interface ProcessingJob {
 }
 
 export interface JobProgressEvent {
-  event_type: 'job_progress' | 'media_imported';
+  event_type: 'job_progress' | 'media_imported' | 'thumbnail_updated';
   job_id?: string;
   media_id?: string;
-  status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'ready';
+  workspace_id?: string;
+  status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'ready' | 'pending' | 'processing';
   progress_percent?: number;
   current_step?: string;
   message?: string;
+  thumbnail_url?: string;
   timestamp: string;
   [key: string]: any;
 }
@@ -68,8 +70,23 @@ export interface ImportedVideo {
   sha256?: string | null;
   container_format: string;
   metadata_json?: string | null;
+  thumbnail_path?: string | null;
+  thumbnail_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'missing' | string;
+  thumbnail_generated_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ThumbnailMetadata {
+  media_id: string;
+  status: string;
+  thumbnail_path?: string | null;
+  thumbnail_url?: string | null;
+  width?: number | null;
+  height?: number | null;
+  file_size_bytes?: number | null;
+  generated_at?: string | null;
+  error_message?: string | null;
 }
 
 export interface MediaListResponse {

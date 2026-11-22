@@ -183,6 +183,8 @@ class JobQueueService:
                         step_description=desc,
                         timeout_seconds=timeout,
                     )
+                elif job_type == "thumbnail_generation":
+                    await self._run_thumbnail_job(job_id, payload)
                 else:
                     # Generic placeholder for future phases
                     await asyncio.sleep(1)
@@ -253,6 +255,145 @@ class JobQueueService:
                 "duration_seconds": len(steps) * 1.0,
             },
         )
+
+    async def _run_thumbnail_job(self, job_id: str, payload: dict | None):
+        """Executes thumbnail generation for an imported video asset."""
+        if not payload:
+            raise ValueError("Payload required for thumbnail_generation job.")
+
+        media_id = payload.get("media_id")
+        workspace_id = payload.get("workspace_id")
+        file_path = payload.get("file_path")
+        duration = float(payload.get("duration", 0.0))
+
+        if not media_id or not workspace_id or not file_path:
+            raise ValueError(f"Incomplete thumbnail job payload: {payload}")
+
+        from app.models.video import ImportedVideo
+        from app.services.thumbnail import generate_thumbnail
+
+        # 1. Update status to processing in DB and broadcast
+        async with async_session_factory() as session:
+            video = await session.get(ImportedVideo, media_id)
+            if video:
+                video.thumbnail_status = "processing"
+                await session.commit()
+
+        await ws_manager.broadcast({
+            "event_type": "thumbnail_updated",
+            "media_id": media_id,
+            "workspace_id": workspace_id,
+            "status": "processing",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        await self._update_job_progress(
+            job_id=job_id,
+            status="running",
+            progress_percent=25.0,
+            current_step="Extracting thumbnail frame",
+            message=f"Extracting representative frame with FFmpeg for media {media_id}",
+        )
+
+        # 2. Execute extraction
+        try:
+            promoted_path, rel_path = await generate_thumbnail(
+                input_video_path=file_path,
+                workspace_id=workspace_id,
+                media_id=media_id,
+                duration_seconds=duration,
+            )
+
+            # 3. Update video record with generated thumbnail
+            now = datetime.now(timezone.utc)
+            async with async_session_factory() as session:
+                video = await session.get(ImportedVideo, media_id)
+                if video:
+                    video.thumbnail_path = rel_path
+                    video.thumbnail_status = "completed"
+                    video.thumbnail_generated_at = now
+                    await session.commit()
+
+            await self._update_job_progress(
+                job_id=job_id,
+                status="completed",
+                progress_percent=100.0,
+                current_step="Completed",
+                message="Thumbnail generated successfully.",
+                result_data={
+                    "thumbnail_path": rel_path,
+                    "file_size_bytes": promoted_path.stat().st_size if promoted_path.exists() else 0,
+                },
+            )
+
+            await ws_manager.broadcast({
+                "event_type": "thumbnail_updated",
+                "media_id": media_id,
+                "workspace_id": workspace_id,
+                "status": "completed",
+                "thumbnail_url": f"/api/v1/media/{media_id}/thumbnail",
+                "timestamp": now.isoformat(),
+            })
+
+        except Exception as exc:
+            # Mark video thumbnail as failed
+            async with async_session_factory() as session:
+                video = await session.get(ImportedVideo, media_id)
+                if video:
+                    video.thumbnail_status = "failed"
+                    await session.commit()
+
+            await ws_manager.broadcast({
+                "event_type": "thumbnail_updated",
+                "media_id": media_id,
+                "workspace_id": workspace_id,
+                "status": "failed",
+                "error": str(exc),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            raise
+
+    async def enqueue_thumbnail_job(
+        self,
+        media_id: str,
+        workspace_id: str,
+        file_path: str,
+        duration_seconds: float = 0.0,
+    ) -> ProcessingJob:
+        """Enqueue a thumbnail generation job, avoiding duplicate active jobs for the same media asset."""
+        async with async_session_factory() as session:
+            stmt = select(ProcessingJob).where(
+                ProcessingJob.entity_type == "media",
+                ProcessingJob.entity_id == media_id,
+                ProcessingJob.job_type == "thumbnail_generation",
+                ProcessingJob.status.in_(["queued", "running"]),
+            )
+            res = await session.execute(stmt)
+            existing = res.scalar_one_or_none()
+            if existing:
+                logger.info(
+                    f"Active thumbnail job {existing.id} already exists for media {media_id}. Reusing existing job."
+                )
+                return existing
+
+            from app.models.video import ImportedVideo
+            video = await session.get(ImportedVideo, media_id)
+            if video:
+                video.thumbnail_status = "pending"
+                await session.commit()
+
+        return await self.create_job(
+            job_type="thumbnail_generation",
+            entity_type="media",
+            entity_id=media_id,
+            payload={
+                "media_id": media_id,
+                "workspace_id": workspace_id,
+                "file_path": file_path,
+                "duration": duration_seconds,
+            },
+        )
+
 
     async def run_ffmpeg_job(
         self,
